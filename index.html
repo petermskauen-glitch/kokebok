@@ -1,0 +1,742 @@
+<!DOCTYPE html>
+<html lang="no">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Min Kokebok</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; background: #efefef; }
+    body { -webkit-text-size-adjust: 100%; overflow-x: hidden; }
+    #root { min-height: 100dvh; }
+    /* Prevent tap flash on mobile */
+    button { -webkit-tap-highlight-color: transparent; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <!-- React -->
+  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+
+  <!-- Babel (transpiles JSX in browser) -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.24.4/babel.min.js"></script>
+
+  <!-- Firebase v11 via CDN (modular, compat shim not needed — we use the compat build) -->
+  <script src="https://www.gstatic.com/firebasejs/11.1.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/11.1.0/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/11.1.0/firebase-firestore-compat.js"></script>
+
+  <script type="text/babel">
+    const { useState, useEffect, useRef, useCallback } = React;
+
+    // ── Firebase ────────────────────────────────────────────
+    const firebaseApp = firebase.initializeApp({
+      apiKey: "AIzaSyDccwiNZ5_CHC8nSe0F80z7z_CXxgQF0GY",
+      authDomain: "kokebok-2480b.firebaseapp.com",
+      projectId: "kokebok-2480b",
+      storageBucket: "kokebok-2480b.firebasestorage.app",
+      messagingSenderId: "833787373495",
+      appId: "1:833787373495:web:a954455f39d93971846a32",
+    });
+    const auth = firebase.auth();
+    const db   = firebase.firestore();
+    const gProvider = new firebase.auth.GoogleAuthProvider();
+
+    // ── Default data ────────────────────────────────────────
+    const defaultData = {
+      Middag: {
+        icon:"🍽️", color:"#6b4f3a",
+        subOrder:["Kylling","Svin","Storfe","Fisk","Salater"],
+        subcategories:{ Kylling:[], Svin:[], Storfe:[], Fisk:[], Salater:[] },
+      },
+      Bakst: {
+        icon:"🍞", color:"#8b6914",
+        subOrder:["Søtbakst","Kaker","Rundstykker/Brød","Til middag"],
+        subcategories:{ Søtbakst:[], Kaker:[], "Rundstykker/Brød":[], "Til middag":[] },
+      },
+      Drikker: {
+        icon:"🥂", color:"#3a5f4e",
+        subOrder:["Smoothies","Cocktails","Varm"],
+        subcategories:{ Smoothies:[], Cocktails:[], Varm:[] },
+      },
+    };
+
+    // ── Theme ───────────────────────────────────────────────
+    const C = {
+      bg:"#efefef", white:"#f8f8f8", warmGray:"#e8e0d6",
+      ink:"#1c1410", inkLight:"#6b5c4e", terra:"#c45c2e", red:"#c0392b",
+    };
+    const NEU_UP   = "6px 6px 14px rgba(0,0,0,0.13), -4px -4px 10px rgba(255,255,255,0.85)";
+    const NEU_DOWN = "inset 3px 3px 7px rgba(0,0,0,0.10), inset -3px -3px 7px rgba(255,255,255,0.80)";
+    const FF = "'SF Pro Display',-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif";
+    const sans  = (o) => ({ fontFamily: FF, ...o });
+    const serif = (o) => ({ fontFamily: "'Georgia','Times New Roman',serif", ...o });
+
+    // ── Notch ───────────────────────────────────────────────
+    const NOTCH_H = 28, CORNER_R = 14;
+    function NotchMarker({ topPx, bg }) {
+      return (
+        <div style={{ position:"absolute", right:0, top:topPx, display:"flex", flexDirection:"column",
+          alignItems:"flex-end", pointerEvents:"none", transition:"top 0.38s cubic-bezier(0.4,0,0.2,1)", zIndex:5 }}>
+          <div style={{ width:CORNER_R, height:CORNER_R, background:"transparent", borderBottomRightRadius:CORNER_R,
+            boxShadow:`${CORNER_R/2}px ${CORNER_R/2}px 0 ${CORNER_R/2}px ${bg}`,
+            filter:"drop-shadow(-2px -2px 4px rgba(0,0,0,0.12))" }} />
+          <div style={{ width:12, height:NOTCH_H, background:bg, boxShadow:"-3px 0 10px rgba(0,0,0,0.18)" }} />
+          <div style={{ width:CORNER_R, height:CORNER_R, background:"transparent", borderTopRightRadius:CORNER_R,
+            boxShadow:`${CORNER_R/2}px -${CORNER_R/2}px 0 ${CORNER_R/2}px ${bg}`,
+            filter:"drop-shadow(-2px 2px 4px rgba(0,0,0,0.12))" }} />
+        </div>
+      );
+    }
+
+    // ── Drag sort ───────────────────────────────────────────
+    function useDragSort(items, onReorder) {
+      const dragIdx = useRef(null), overIdx = useRef(null);
+      const [dragging, setDragging] = useState(null);
+      const [over, setOver] = useState(null);
+      const onDragStart = (i) => (e) => { dragIdx.current=i; setDragging(i); e.dataTransfer.effectAllowed="move"; };
+      const onDragEnter = (i) => (e) => { e.preventDefault(); overIdx.current=i; setOver(i); };
+      const onDragOver  = (e) => { e.preventDefault(); e.dataTransfer.dropEffect="move"; };
+      const onDrop = (e) => {
+        e.preventDefault();
+        const from=dragIdx.current, to=overIdx.current;
+        if (from!==null && to!==null && from!==to) {
+          const arr=[...items]; const [item]=arr.splice(from,1); arr.splice(to,0,item); onReorder(arr);
+        }
+        dragIdx.current=null; overIdx.current=null; setDragging(null); setOver(null);
+      };
+      const onDragEnd = () => { setDragging(null); setOver(null); };
+      return { dragging, over, onDragStart, onDragEnter, onDragOver, onDrop, onDragEnd };
+    }
+
+    function useTouchSort(items, onReorder) {
+      const state = useRef({ startY:0, idx:null, cloneEl:null, overIdx:undefined });
+      const [activeIdx, setActiveIdx] = useState(null);
+      const onTouchStart = (i, containerRef) => (e) => {
+        const touch=e.touches[0], el=e.currentTarget, rect=el.getBoundingClientRect();
+        const clone=el.cloneNode(true);
+        clone.style.cssText=`position:fixed;top:${rect.top}px;left:${rect.left}px;width:${rect.width}px;opacity:0.92;z-index:9999;pointer-events:none;transform:scale(1.03);transition:none;box-shadow:0 12px 32px rgba(0,0,0,0.22);border-radius:16px;`;
+        document.body.appendChild(clone);
+        state.current={ startY:touch.clientY, offsetY:touch.clientY-rect.top, idx:i, cloneEl:clone, containerRef, overIdx:i };
+        setActiveIdx(i);
+      };
+      const onTouchMove = useCallback((e) => {
+        const { cloneEl, offsetY, containerRef } = state.current;
+        if (!cloneEl) return;
+        e.preventDefault();
+        const touch=e.touches[0];
+        cloneEl.style.top=(touch.clientY-offsetY)+"px";
+        if (!containerRef?.current) return;
+        const children=Array.from(containerRef.current.children).filter(c=>c.dataset.sortidx!==undefined);
+        let newOver=state.current.idx;
+        for (let c of children) { const r=c.getBoundingClientRect(); if (touch.clientY > r.top+r.height/2) newOver=parseInt(c.dataset.sortidx); }
+        state.current.overIdx=newOver;
+      }, []);
+      const onTouchEnd = useCallback(() => {
+        const { cloneEl, idx, overIdx } = state.current;
+        if (cloneEl) document.body.removeChild(cloneEl);
+        if (idx!==null && overIdx!==undefined && overIdx!==idx) {
+          const arr=[...items]; const [item]=arr.splice(idx,1); arr.splice(overIdx,0,item); onReorder(arr);
+        }
+        state.current={ startY:0, idx:null, cloneEl:null, overIdx:undefined };
+        setActiveIdx(null);
+      }, [items, onReorder]);
+      useEffect(() => {
+        if (activeIdx!==null) {
+          window.addEventListener("touchmove", onTouchMove, { passive:false });
+          window.addEventListener("touchend", onTouchEnd);
+        }
+        return () => { window.removeEventListener("touchmove",onTouchMove); window.removeEventListener("touchend",onTouchEnd); };
+      }, [activeIdx, onTouchMove, onTouchEnd]);
+      return { activeIdx, onTouchStart };
+    }
+
+    // ── Icons ───────────────────────────────────────────────
+    function ChevR() {
+      return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={C.inkLight} strokeWidth="2.5" strokeLinecap="round" style={{flexShrink:0}}><path d="M9 18l6-6-6-6"/></svg>;
+    }
+    function DragHandle() {
+      return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={C.inkLight} strokeWidth="2" strokeLinecap="round" style={{flexShrink:0,opacity:0.4,cursor:"grab"}}><line x1="8" y1="6" x2="16" y2="6"/><line x1="8" y1="12" x2="16" y2="12"/><line x1="8" y1="18" x2="16" y2="18"/></svg>;
+    }
+
+    // ── Shared components ───────────────────────────────────
+    function Modal({ children, onClose }) {
+      return (
+        <div style={s.overlay} onClick={onClose}>
+          <div style={s.sheet} onClick={e=>e.stopPropagation()}>
+            <div style={s.handle}/>{children}
+          </div>
+        </div>
+      );
+    }
+    function Empty({ icon, text, hint }) {
+      return (
+        <div style={{display:"flex",flexDirection:"column",alignItems:"center",padding:"52px 16px",gap:6}}>
+          {icon && <span style={{fontSize:40}}>{icon}</span>}
+          <p style={sans({fontSize:15,color:C.inkLight,margin:0})}>{text}</p>
+          {hint && <p style={sans({fontSize:13,color:C.inkLight,margin:0,opacity:0.7})}>{hint}</p>}
+        </div>
+      );
+    }
+    function ImagePicker({ image, onPick, onRemove }) {
+      const ref = useRef();
+      const handleFile = (e) => {
+        const file=e.target.files?.[0]; if (!file) return;
+        const reader=new FileReader();
+        reader.onload=(ev)=>onPick(ev.target.result);
+        reader.readAsDataURL(file); e.target.value="";
+      };
+      return (
+        <div style={{marginBottom:14}}>
+          <label style={s.label}>Bilde (valgfritt)</label>
+          {image ? (
+            <div>
+              <img src={image} alt="" style={s.imgPreview}/>
+              <button style={s.imgRemoveBtn} onClick={onRemove}>✕ Fjern bilde</button>
+            </div>
+          ) : (
+            <button style={s.imgPickBtn} onClick={()=>ref.current.click()}>
+              <span style={{fontSize:22}}>📷</span>
+              <span style={{fontSize:13,color:C.inkLight}}>Velg bilde fra fil eller bildebibliotek</span>
+              <input ref={ref} type="file" accept="image/*" style={{display:"none"}} onChange={handleFile}/>
+            </button>
+          )}
+        </div>
+      );
+    }
+    function RecipeForm({ form, setForm, addType, setAddType, onSave, onBack, isEdit }) {
+      const sf = (k) => (e) => setForm(f=>({...f,[k]:e.target.value}));
+      return (
+        <>
+          {!isEdit && !addType && (
+            <>
+              <h2 style={s.sheetTitle}>Legg til oppskrift</h2>
+              <p style={s.sheetSub}>Velg hvordan du vil legge den inn:</p>
+              <div style={s.choiceRow}>
+                <button style={s.choiceCard} onClick={()=>setAddType("link")}><span style={{fontSize:30}}>🔗</span><span style={s.choiceLabel}>Legg inn link</span></button>
+                <button style={s.choiceCard} onClick={()=>setAddType("manual")}><span style={{fontSize:30}}>✏️</span><span style={s.choiceLabel}>Skriv manuelt</span></button>
+              </div>
+              <button style={s.ghostBtn} onClick={onBack}>Avbryt</button>
+            </>
+          )}
+          {(addType==="link"||(isEdit&&form.type==="link")) && (
+            <>
+              {!isEdit && <button style={s.stepBack} onClick={()=>setAddType(null)}>← Tilbake</button>}
+              <h2 style={s.sheetTitle}>{isEdit?"Rediger oppskrift":"Legg inn link"}</h2>
+              <label style={s.label}>Tittel *</label>
+              <input style={s.input} placeholder="Navn på oppskrift" value={form.title} onChange={sf("title")}/>
+              <label style={s.label}>URL</label>
+              <input style={s.input} placeholder="https://..." inputMode="url" value={form.url||""} onChange={sf("url")}/>
+              <label style={s.label}>Beskrivelse (valgfritt)</label>
+              <input style={s.input} placeholder="En setning om oppskriften" value={form.desc} onChange={sf("desc")}/>
+              <ImagePicker image={form.image} onPick={img=>setForm(f=>({...f,image:img}))} onRemove={()=>setForm(f=>({...f,image:null}))}/>
+              <button style={{...s.saveBtn,opacity:form.title.trim()?1:0.45}} onClick={onSave}>{isEdit?"Lagre endringer":"Lagre oppskrift"}</button>
+            </>
+          )}
+          {(addType==="manual"||(isEdit&&form.type==="manual")) && (
+            <>
+              {!isEdit && <button style={s.stepBack} onClick={()=>setAddType(null)}>← Tilbake</button>}
+              <h2 style={s.sheetTitle}>{isEdit?"Rediger oppskrift":"Skriv manuelt"}</h2>
+              <label style={s.label}>Tittel *</label>
+              <input style={s.input} placeholder="Navn på oppskrift" value={form.title} onChange={sf("title")}/>
+              <label style={s.label}>Beskrivelse (valgfritt)</label>
+              <input style={s.input} placeholder="En kort beskrivelse" value={form.desc} onChange={sf("desc")}/>
+              <label style={s.label}>Oppskrift</label>
+              <textarea style={s.textarea} placeholder={"Ingredienser:\n– ...\n\nFremgangsmåte:\n1. ..."} value={form.content||""} onChange={sf("content")}/>
+              <ImagePicker image={form.image} onPick={img=>setForm(f=>({...f,image:img}))} onRemove={()=>setForm(f=>({...f,image:null}))}/>
+              <button style={{...s.saveBtn,opacity:form.title.trim()?1:0.45}} onClick={onSave}>{isEdit?"Lagre endringer":"Lagre oppskrift"}</button>
+            </>
+          )}
+        </>
+      );
+    }
+    function SubMenu({ onEdit, onDelete }) {
+      const [open, setOpen] = useState(false);
+      return (
+        <div style={{position:"relative"}}>
+          <button style={s.dotBtn} onClick={e=>{e.stopPropagation();setOpen(v=>!v);}}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={C.inkLight} strokeWidth="2.5" strokeLinecap="round">
+              <circle cx="12" cy="5" r="1.2" fill={C.inkLight}/><circle cx="12" cy="12" r="1.2" fill={C.inkLight}/><circle cx="12" cy="19" r="1.2" fill={C.inkLight}/>
+            </svg>
+          </button>
+          {open && (
+            <>
+              <div style={s.menuOverlay} onClick={e=>{e.stopPropagation();setOpen(false);}}/>
+              <div style={{...s.dropMenu,right:0,top:32,minWidth:160}}>
+                <button style={s.dropItem} onClick={e=>{e.stopPropagation();setOpen(false);onEdit();}}>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={C.ink} strokeWidth="2" strokeLinecap="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                  Endre navn
+                </button>
+                <div style={s.dropDivider}/>
+                <button style={{...s.dropItem,color:C.red}} onClick={e=>{e.stopPropagation();setOpen(false);onDelete();}}>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={C.red} strokeWidth="2" strokeLinecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>
+                  Slett
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      );
+    }
+    function SubList({ subs, catColor, data, activeCat, onSwitch, onEdit, onDelete, onReorder }) {
+      const containerRef = useRef();
+      const { dragging:dDrag, over:dOver, onDragStart, onDragEnter, onDragOver, onDrop, onDragEnd } = useDragSort(subs, onReorder);
+      const { activeIdx:tActive, onTouchStart } = useTouchSort(subs, onReorder);
+      return (
+        <div ref={containerRef} style={s.list}>
+          {subs.map((sub,i) => {
+            const count=data[activeCat].subcategories[sub]?.length||0;
+            const isOver=dOver===i&&dDrag!==i, isDragging=dDrag===i||tActive===i;
+            return (
+              <div key={sub} data-sortidx={i} draggable
+                onDragStart={onDragStart(i)} onDragEnter={onDragEnter(i)} onDragOver={onDragOver} onDrop={onDrop} onDragEnd={onDragEnd}
+                style={{...s.subRow,opacity:isDragging?0.4:1,outline:isOver?`2px solid ${catColor}`:"none",transition:"opacity 0.15s,outline 0.1s"}}>
+                <div onTouchStart={onTouchStart(i,containerRef)} style={{padding:"4px 6px 4px 0",cursor:"grab"}}><DragHandle/></div>
+                <div style={{...s.subDot,background:catColor}}/>
+                <span style={s.subName} onClick={()=>onSwitch(sub)}>{sub}</span>
+                <span style={s.subCount} onClick={()=>onSwitch(sub)}>{count}</span>
+                <SubMenu onEdit={()=>onEdit(sub)} onDelete={()=>onDelete(sub)}/>
+                <span onClick={()=>onSwitch(sub)} style={{display:"flex",alignItems:"center"}}><ChevR/></span>
+              </div>
+            );
+          })}
+        </div>
+      );
+    }
+    function RecipeList({ recipes, onOpen, onReorder }) {
+      const containerRef = useRef();
+      const { dragging:dDrag, over:dOver, onDragStart, onDragEnter, onDragOver, onDrop, onDragEnd } = useDragSort(recipes, onReorder);
+      const { activeIdx:tActive, onTouchStart } = useTouchSort(recipes, onReorder);
+      return (
+        <div ref={containerRef} style={s.list}>
+          {recipes.map((r,i) => {
+            const isOver=dOver===i&&dDrag!==i, isDragging=dDrag===i||tActive===i;
+            return (
+              <div key={r.id} data-sortidx={i} draggable
+                onDragStart={onDragStart(i)} onDragEnter={onDragEnter(i)} onDragOver={onDragOver} onDrop={onDrop} onDragEnd={onDragEnd}
+                style={{...s.recipeRow,opacity:isDragging?0.4:1,outline:isOver?`2px solid ${C.terra}`:"none",transition:"opacity 0.15s,outline 0.1s"}}>
+                <div onTouchStart={onTouchStart(i,containerRef)} style={{padding:"4px 8px 4px 0",cursor:"grab"}}><DragHandle/></div>
+                <div style={{display:"flex",alignItems:"center",gap:12,flex:1,minWidth:0}} onClick={()=>onOpen(r)}>
+                  {r.image ? <img src={r.image} alt="" style={s.thumb}/> : <div style={s.thumbFallback}>{r.type==="link"?"🔗":"📝"}</div>}
+                  <div style={s.recipeInfo}>
+                    <span style={s.recipeTitle}>{r.title}</span>
+                    {r.desc && <span style={s.recipeDesc}>{r.desc}</span>}
+                    <span style={s.recipeBadge}>{r.type==="link"?"Link":"Manuell"}</span>
+                  </div>
+                </div>
+                <span onClick={()=>onOpen(r)} style={{display:"flex",alignItems:"center"}}><ChevR/></span>
+              </div>
+            );
+          })}
+        </div>
+      );
+    }
+
+    // ── Login screen ────────────────────────────────────────
+    function LoginScreen({ onLogin, loading }) {
+      return (
+        <div style={{minHeight:"100dvh",background:"#efefef",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:32}}>
+          <div style={{marginBottom:32,textAlign:"center"}}>
+            <div style={sans({fontSize:40,fontWeight:"800",color:"#6b4f3a",textShadow:"1px 2px 4px rgba(0,0,0,0.22), -1px -1px 2px rgba(255,255,255,0.45)",marginBottom:8})}>
+              Min Kokebok
+            </div>
+            <div style={sans({fontSize:14,color:C.inkLight})}>Logg inn for å synkronisere på tvers av enheter</div>
+          </div>
+          <button style={sans({fontSize:16,fontWeight:"600",color:C.ink,cursor:"pointer",border:"none",borderRadius:16,padding:"16px 28px",background:"#efefef",boxShadow:NEU_UP,display:"flex",alignItems:"center",gap:12,opacity:loading?0.6:1})} onClick={onLogin} disabled={loading}>
+            <svg width="22" height="22" viewBox="0 0 48 48">
+              <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.33 2.56 13.22l7.98 6.19C12.43 13.08 17.74 9.5 24 9.5z"/>
+              <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
+              <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
+              <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.18 1.48-4.97 2.31-8.16 2.31-6.26 0-11.57-3.58-13.47-8.91l-7.98 6.19C6.51 42.67 14.62 48 24 48z"/>
+            </svg>
+            {loading ? "Logger inn…" : "Logg inn med Google"}
+          </button>
+        </div>
+      );
+    }
+
+    // ── Main App ────────────────────────────────────────────
+    const EMPTY_FORM = { title:"", url:"", content:"", desc:"", image:null };
+    const SIDEBAR_W  = 58;
+
+    function App() {
+      const [user,    setUser]    = useState(null);
+      const [authReady, setAuthReady] = useState(false);
+      const [loginLoading, setLoginLoading] = useState(false);
+      const [data,    setData]    = useState(defaultData);
+      const [syncing, setSyncing] = useState(false);
+      const [activeCat, setActiveCat] = useState(Object.keys(defaultData)[0]);
+      const [activeSub, setActiveSub] = useState(null);
+      const [activeRecipe, setActiveRecipe] = useState(null);
+      const [slideIn, setSlideIn] = useState(false);
+      const [searchQuery, setSearchQuery] = useState("");
+      const [showSearch,  setShowSearch]  = useState(false);
+      const [showAdd,  setShowAdd]  = useState(false);
+      const [addType,  setAddType]  = useState(null);
+      const [addForm,  setAddForm]  = useState(EMPTY_FORM);
+      const [showEdit, setShowEdit] = useState(false);
+      const [editForm, setEditForm] = useState(EMPTY_FORM);
+      const [confirmDelRecipe, setConfirmDelRecipe] = useState(null);
+      const [showPanelMenu, setShowPanelMenu] = useState(false);
+      const [showAddSub,  setShowAddSub]  = useState(false);
+      const [newSubName,  setNewSubName]  = useState("");
+      const [editSubOld,  setEditSubOld]  = useState(null);
+      const [editSubName, setEditSubName] = useState("");
+      const [confirmDelSub, setConfirmDelSub] = useState(null);
+      const [contentFade, setContentFade] = useState(false);
+      const [notchTopPx,  setNotchTopPx]  = useState(0);
+      const searchRef = useRef(); const navRef = useRef(); const itemRefs = useRef({});
+
+      // Auth
+      useEffect(() => {
+        const unsub = auth.onAuthStateChanged(u => { setUser(u); setAuthReady(true); });
+        return unsub;
+      }, []);
+      const handleLogin = async () => {
+        setLoginLoading(true);
+        try { await auth.signInWithPopup(gProvider); } catch(e) { console.error(e); }
+        setLoginLoading(false);
+      };
+      const handleLogout = async () => { await auth.signOut(); setData(defaultData); setActiveSub(null); };
+
+      // Firestore
+      useEffect(() => {
+        if (!user) return;
+        const ref = db.collection("kokeboker").doc(user.uid);
+        const unsub = ref.onSnapshot(snap => {
+          if (snap.exists) {
+            const d = snap.data().data;
+            Object.keys(d).forEach(cat => { if (!d[cat].subOrder) d[cat].subOrder = Object.keys(d[cat].subcategories); });
+            setData(d);
+          } else {
+            ref.set({ data: defaultData });
+          }
+        });
+        return unsub;
+      }, [user]);
+
+      const persist = async (newData) => {
+        if (!user) return;
+        setSyncing(true);
+        try { await db.collection("kokeboker").doc(user.uid).set({ data: newData }); }
+        catch(e) { console.error(e); }
+        setSyncing(false);
+      };
+      const updateData = (newData) => { setData(newData); persist(newData); };
+
+      // Notch
+      const measureNotch = (cat) => {
+        requestAnimationFrame(() => {
+          const nav=navRef.current, btn=itemRefs.current[cat];
+          if (!nav||!btn) return;
+          const navTop=nav.getBoundingClientRect().top, r=btn.getBoundingClientRect();
+          setNotchTopPx(r.top-navTop+r.height/2-NOTCH_H/2-CORNER_R);
+        });
+      };
+      useEffect(() => { measureNotch(activeCat); }, [activeCat]);
+
+      const switchCat = (cat) => {
+        if (cat===activeCat) return;
+        measureNotch(cat); setContentFade(true);
+        setTimeout(() => { setActiveCat(cat); setActiveSub(null); setContentFade(false); }, 140);
+      };
+      const switchSub = (sub) => { setContentFade(true); setTimeout(() => { setActiveSub(sub); setContentFade(false); }, 140); };
+      const openRecipe = (r) => { setActiveRecipe(r); setSlideIn(false); setShowPanelMenu(false); requestAnimationFrame(() => requestAnimationFrame(() => setSlideIn(true))); };
+      const closeRecipe = () => { setSlideIn(false); setShowPanelMenu(false); setTimeout(() => setActiveRecipe(null), 340); };
+
+      // Recipe CRUD
+      const saveAdd = () => {
+        if (!addForm.title.trim()) return;
+        const recipe = { id:Date.now(), title:addForm.title.trim(), type:addType, url:addType==="link"?addForm.url.trim():null, content:addType==="manual"?addForm.content.trim():null, desc:addForm.desc.trim(), image:addForm.image||null };
+        const d={...data}; d[activeCat].subcategories[activeSub]=[...(d[activeCat].subcategories[activeSub]||[]),recipe];
+        updateData(d); setShowAdd(false); setAddType(null); setAddForm(EMPTY_FORM);
+      };
+      const saveEdit = () => {
+        if (!editForm.title.trim()) return;
+        const updated={...editForm,title:editForm.title.trim(),desc:editForm.desc.trim()};
+        const d={...data}; d[activeCat].subcategories[activeSub]=d[activeCat].subcategories[activeSub].map(r=>r.id===updated.id?updated:r);
+        updateData(d); setActiveRecipe(updated); setShowEdit(false);
+      };
+      const doDelRecipe = (id) => { const d={...data}; d[activeCat].subcategories[activeSub]=d[activeCat].subcategories[activeSub].filter(r=>r.id!==id); updateData(d); setConfirmDelRecipe(null); closeRecipe(); };
+      const reorderRecipes = (newList) => { const d={...data}; d[activeCat].subcategories[activeSub]=newList; updateData(d); };
+
+      // Sub CRUD
+      const saveAddSub = () => {
+        const name=newSubName.trim(); if (!name||data[activeCat].subcategories[name]) return;
+        const d={...data}; d[activeCat].subcategories[name]=[]; d[activeCat].subOrder=[...(d[activeCat].subOrder||[]),name];
+        updateData(d); setShowAddSub(false); setNewSubName("");
+      };
+      const saveEditSub = () => {
+        const newName=editSubName.trim(); if (!newName||!editSubOld) return;
+        if (newName===editSubOld) { setEditSubOld(null); return; }
+        if (data[activeCat].subcategories[newName]) return;
+        const d={...data}, recipes=d[activeCat].subcategories[editSubOld];
+        delete d[activeCat].subcategories[editSubOld];
+        d[activeCat].subcategories[newName]=recipes;
+        d[activeCat].subOrder=d[activeCat].subOrder.map(s=>s===editSubOld?newName:s);
+        updateData(d); setEditSubOld(null); setEditSubName("");
+      };
+      const doDelSub = (sub) => {
+        const d={...data}; delete d[activeCat].subcategories[sub]; d[activeCat].subOrder=d[activeCat].subOrder.filter(s=>s!==sub);
+        updateData(d); setConfirmDelSub(null); if (activeSub===sub) setActiveSub(null);
+      };
+      const reorderSubs = (newOrder) => { const d={...data}; d[activeCat].subOrder=newOrder; updateData(d); };
+
+      // Search
+      const allRecipes = () => { const out=[]; Object.entries(data).forEach(([cat,cv])=>Object.entries(cv.subcategories).forEach(([sub,list])=>list.forEach(r=>out.push({...r,_cat:cat,_sub:sub})))); return out; };
+      const searchResults = searchQuery.trim() ? allRecipes().filter(r=>r.title.toLowerCase().includes(searchQuery.toLowerCase())||(r.desc&&r.desc.toLowerCase().includes(searchQuery.toLowerCase()))) : [];
+
+      const catColor   = data[activeCat]?.color||"#555";
+      const subs       = activeCat ? (data[activeCat].subOrder||Object.keys(data[activeCat].subcategories)) : [];
+      const recipes    = activeSub ? (data[activeCat]?.subcategories[activeSub]||[]) : [];
+      const totalInCat = activeCat ? Object.values(data[activeCat].subcategories).reduce((a,b)=>a+b.length,0) : 0;
+
+      if (!authReady) return <div style={{minHeight:"100dvh",background:"#efefef",display:"flex",alignItems:"center",justifyContent:"center"}}><div style={sans({fontSize:15,color:C.inkLight})}>Laster…</div></div>;
+      if (!user) return <LoginScreen onLogin={handleLogin} loading={loginLoading}/>;
+
+      return (
+        <div style={s.root}>
+          {/* SIDEBAR */}
+          <aside style={{...s.sidebar,background:catColor}}>
+            <div style={s.sideTop}>
+              {user.photoURL && (
+                <button onClick={handleLogout} title="Logg ut" style={{background:"none",border:"none",cursor:"pointer",padding:0}}>
+                  <img src={user.photoURL} alt="avatar" style={{width:32,height:32,borderRadius:"50%",opacity:0.85}}/>
+                </button>
+              )}
+            </div>
+            <nav ref={navRef} style={s.sideNav}>
+              <NotchMarker topPx={notchTopPx} bg={C.bg}/>
+              {Object.entries(data).map(([cat]) => {
+                const isActive=cat===activeCat;
+                return (
+                  <button key={cat} ref={el=>{itemRefs.current[cat]=el;}} style={s.sideItem} onClick={()=>switchCat(cat)}>
+                    <span style={{...s.sideLabel,color:isActive?"#fff":"rgba(255,255,255,0.45)",fontWeight:isActive?"700":"400"}}>{cat}</span>
+                  </button>
+                );
+              })}
+            </nav>
+            <div style={s.sideBottom}>
+              <button style={s.homeBtn} onClick={()=>{switchCat(Object.keys(data)[0]);setActiveSub(null);}}>
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.5)" strokeWidth="1.8" strokeLinecap="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+              </button>
+            </div>
+          </aside>
+
+          {/* MAIN */}
+          <div style={s.mainPanel}>
+            {syncing && <div style={{position:"absolute",top:12,right:60,zIndex:10,...sans({fontSize:11,color:C.inkLight,opacity:0.7})}}>Lagrer…</div>}
+            <div style={s.topBar}>
+              <div style={s.topBarLeft}>
+                {activeSub ? (
+                  <button style={s.backChip} onClick={()=>switchSub(null)}>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={C.inkLight} strokeWidth="2.5" strokeLinecap="round"><path d="M15 18l-6-6 6-6"/></svg>
+                    {activeCat}
+                  </button>
+                ) : (
+                  <span style={s.superTitle}>{totalInCat} oppskrifter</span>
+                )}
+              </div>
+              <button style={s.searchToggle} onClick={()=>{setShowSearch(v=>!v);setTimeout(()=>searchRef.current?.focus(),80);}}>
+                <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke={C.inkLight} strokeWidth="2.2" strokeLinecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+              </button>
+            </div>
+            <div style={s.pageTitleBar}>
+              <div>
+                {activeSub && <div style={s.superLabel}>{activeCat}</div>}
+                <h1 style={{...s.pageH1,color:catColor,textShadow:"1px 2px 4px rgba(0,0,0,0.22), -1px -1px 2px rgba(255,255,255,0.45)"}}>{activeSub||activeCat}</h1>
+              </div>
+            </div>
+            {showSearch && (
+              <div style={s.searchBar}>
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={C.inkLight} strokeWidth="2.2" strokeLinecap="round" style={{flexShrink:0}}><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                <input ref={searchRef} style={s.searchInput} placeholder="Søk i alle oppskrifter…" value={searchQuery} onChange={e=>setSearchQuery(e.target.value)}/>
+                {searchQuery && <button style={s.searchClear} onClick={()=>setSearchQuery("")}>✕</button>}
+              </div>
+            )}
+            <div style={{...s.content,opacity:contentFade?0:1,transition:"opacity 0.14s"}}>
+              {showSearch && searchQuery.trim() ? (
+                <div style={s.list}>
+                  {searchResults.length===0 ? <Empty icon="🔍" text="Ingen treff."/> : searchResults.map(r=>(
+                    <div key={r.id} style={s.recipeRow} onClick={()=>{setActiveCat(r._cat);setActiveSub(r._sub);openRecipe(r);}}>
+                      {r.image?<img src={r.image} alt="" style={s.thumb}/>:<div style={s.thumbFallback}>{r.type==="link"?"🔗":"📝"}</div>}
+                      <div style={s.recipeInfo}><span style={s.recipeTitle}>{r.title}</span>{r.desc&&<span style={s.recipeDesc}>{r.desc}</span>}<span style={s.recipeBreadcrumb}>{r._cat} › {r._sub}</span></div>
+                      <ChevR/>
+                    </div>
+                  ))}
+                </div>
+              ) : !activeSub ? (
+                <>
+                  <SubList subs={subs} catColor={catColor} data={data} activeCat={activeCat}
+                    onSwitch={switchSub} onEdit={sub=>{setEditSubOld(sub);setEditSubName(sub);}} onDelete={sub=>setConfirmDelSub(sub)} onReorder={reorderSubs}/>
+                  {subs.length===0 && <Empty text="Ingen underkategorier." hint="Trykk + for å legge til!"/>}
+                </>
+              ) : (
+                recipes.length===0 ? <Empty text="Ingen oppskrifter ennå." hint="Trykk + for å legge til!"/> : <RecipeList recipes={recipes} onOpen={openRecipe} onReorder={reorderRecipes}/>
+              )}
+            </div>
+            {(!showSearch||!searchQuery.trim()) && (
+              <button style={{...s.fab,background:catColor}} onClick={()=>activeSub?setShowAdd(true):setShowAddSub(true)}>
+                <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              </button>
+            )}
+          </div>
+
+          {/* RECIPE PANEL */}
+          {activeRecipe && (
+            <div style={{...s.panel,transform:slideIn?"translateX(0)":"translateX(100%)"}}>
+              <header style={s.panelHeader}>
+                <button style={s.iconBtn} onClick={closeRecipe}><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke={C.inkLight} strokeWidth="2.5" strokeLinecap="round"><path d="M15 18l-6-6 6-6"/></svg></button>
+                <span style={s.panelTitle}>{activeRecipe.title}</span>
+                <button style={s.iconBtn} onClick={()=>setShowPanelMenu(v=>!v)}>
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={C.inkLight} strokeWidth="2.5" strokeLinecap="round"><circle cx="12" cy="5" r="1.2" fill={C.inkLight}/><circle cx="12" cy="12" r="1.2" fill={C.inkLight}/><circle cx="12" cy="19" r="1.2" fill={C.inkLight}/></svg>
+                </button>
+              </header>
+              {showPanelMenu && (
+                <>
+                  <div style={s.menuOverlay} onClick={()=>setShowPanelMenu(false)}/>
+                  <div style={s.dropMenu}>
+                    <button style={s.dropItem} onClick={()=>{setEditForm({...activeRecipe});setShowEdit(true);setShowPanelMenu(false);}}>
+                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={C.ink} strokeWidth="2" strokeLinecap="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                      Rediger oppskrift
+                    </button>
+                    <div style={s.dropDivider}/>
+                    <button style={{...s.dropItem,color:C.red}} onClick={()=>{setConfirmDelRecipe(activeRecipe.id);setShowPanelMenu(false);}}>
+                      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke={C.red} strokeWidth="2" strokeLinecap="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/></svg>
+                      Slett oppskrift
+                    </button>
+                  </div>
+                </>
+              )}
+              {activeRecipe.image && <div style={s.heroWrap}><img src={activeRecipe.image} alt={activeRecipe.title} style={s.heroImg}/></div>}
+              <div style={s.panelBody}>
+                {activeRecipe.type==="link" ? (
+                  <>{activeRecipe.desc&&<p style={s.panelDesc}>{activeRecipe.desc}</p>}
+                    <a href={activeRecipe.url} target="_blank" rel="noreferrer" style={{...s.openLinkBtn,background:catColor}}>Åpne oppskrift →</a>
+                    <div style={s.iframeBox}><iframe src={activeRecipe.url} title={activeRecipe.title} style={s.iframe} sandbox="allow-scripts allow-same-origin allow-popups allow-forms"/></div>
+                  </>
+                ) : (
+                  <>{activeRecipe.desc&&<p style={s.panelDesc}>{activeRecipe.desc}</p>}<pre style={s.recipeText}>{activeRecipe.content}</pre></>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* MODALS */}
+          {showAdd && <Modal onClose={()=>{setShowAdd(false);setAddType(null);setAddForm(EMPTY_FORM);}}><RecipeForm form={addForm} setForm={setAddForm} addType={addType} setAddType={setAddType} onSave={saveAdd} onBack={()=>{setShowAdd(false);setAddType(null);setAddForm(EMPTY_FORM);}} isEdit={false}/></Modal>}
+          {showEdit && <Modal onClose={()=>setShowEdit(false)}><button style={s.stepBack} onClick={()=>setShowEdit(false)}>← Avbryt</button><RecipeForm form={editForm} setForm={setEditForm} addType={editForm.type} setAddType={()=>{}} onSave={saveEdit} onBack={()=>setShowEdit(false)} isEdit={true}/></Modal>}
+          {confirmDelRecipe && (
+            <Modal onClose={()=>setConfirmDelRecipe(null)}>
+              <div style={{textAlign:"center",padding:"8px 0 20px"}}><span style={{fontSize:42}}>🗑️</span><h2 style={{...s.sheetTitle,textAlign:"center",marginTop:10}}>Slett oppskrift?</h2><p style={{...s.sheetSub,textAlign:"center"}}>«{activeRecipe?.title}» vil bli slettet permanent.</p></div>
+              <button style={{...s.saveBtn,background:C.red,marginBottom:10}} onClick={()=>doDelRecipe(confirmDelRecipe)}>Ja, slett oppskriften</button>
+              <button style={s.ghostBtn} onClick={()=>setConfirmDelRecipe(null)}>Avbryt</button>
+            </Modal>
+          )}
+          {showAddSub && (
+            <Modal onClose={()=>{setShowAddSub(false);setNewSubName("");}}>
+              <h2 style={s.sheetTitle}>Ny underkategori</h2><p style={s.sheetSub}>Under {activeCat}</p>
+              <label style={s.label}>Navn *</label>
+              <input style={s.input} placeholder="F.eks. «Pastaretter»" value={newSubName} onChange={e=>setNewSubName(e.target.value)} onKeyDown={e=>e.key==="Enter"&&saveAddSub()} autoFocus/>
+              <button style={{...s.saveBtn,opacity:newSubName.trim()?1:0.45}} onClick={saveAddSub}>Legg til underkategori</button>
+              <button style={{...s.ghostBtn,marginTop:10}} onClick={()=>{setShowAddSub(false);setNewSubName("");}}>Avbryt</button>
+            </Modal>
+          )}
+          {editSubOld && (
+            <Modal onClose={()=>setEditSubOld(null)}>
+              <h2 style={s.sheetTitle}>Endre navn</h2>
+              <label style={s.label}>Nytt navn *</label>
+              <input style={s.input} value={editSubName} onChange={e=>setEditSubName(e.target.value)} onKeyDown={e=>e.key==="Enter"&&saveEditSub()} autoFocus/>
+              <button style={{...s.saveBtn,opacity:editSubName.trim()?1:0.45}} onClick={saveEditSub}>Lagre nytt navn</button>
+              <button style={{...s.ghostBtn,marginTop:10}} onClick={()=>setEditSubOld(null)}>Avbryt</button>
+            </Modal>
+          )}
+          {confirmDelSub && (
+            <Modal onClose={()=>setConfirmDelSub(null)}>
+              <div style={{textAlign:"center",padding:"8px 0 20px"}}><span style={{fontSize:42}}>🗑️</span><h2 style={{...s.sheetTitle,textAlign:"center",marginTop:10}}>Slett underkategori?</h2><p style={{...s.sheetSub,textAlign:"center"}}>«{confirmDelSub}» og alle {data[activeCat]?.subcategories[confirmDelSub]?.length||0} oppskrifter slettes permanent.</p></div>
+              <button style={{...s.saveBtn,background:C.red,marginBottom:10}} onClick={()=>doDelSub(confirmDelSub)}>Ja, slett underkategorien</button>
+              <button style={s.ghostBtn} onClick={()=>setConfirmDelSub(null)}>Avbryt</button>
+            </Modal>
+          )}
+        </div>
+      );
+    }
+
+    // ── Styles ──────────────────────────────────────────────
+    const s = {
+      root: sans({display:"flex",minHeight:"100dvh",background:"#efefef",overflowX:"hidden",position:"relative",WebkitTextSizeAdjust:"100%"}),
+      sidebar: {width:SIDEBAR_W,flexShrink:0,display:"flex",flexDirection:"column",alignItems:"center",position:"fixed",top:0,left:0,bottom:0,zIndex:28,transition:"background 0.4s ease",borderRadius:"0 20px 20px 0",overflow:"visible"},
+      sideTop: {height:62,display:"flex",alignItems:"center",justifyContent:"center"},
+      sideNav: {flex:1,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:0,width:"100%",paddingBottom:20,position:"relative"},
+      sideItem: {position:"relative",width:"100%",background:"none",border:"none",cursor:"pointer",height:62,display:"flex",alignItems:"center",justifyContent:"center",WebkitTapHighlightColor:"transparent"},
+      sideLabel: sans({fontSize:11,letterSpacing:"0.08em",writingMode:"vertical-rl",textOrientation:"mixed",transform:"rotate(180deg)",userSelect:"none",transition:"color 0.2s, font-weight 0.2s"}),
+      sideBottom: {height:70,display:"flex",alignItems:"center",justifyContent:"center"},
+      homeBtn: {background:"none",border:"none",cursor:"pointer",padding:10,display:"flex",alignItems:"center",justifyContent:"center",WebkitTapHighlightColor:"transparent"},
+      mainPanel: {flex:1,marginLeft:SIDEBAR_W,display:"flex",flexDirection:"column",minHeight:"100dvh",position:"relative",background:"#efefef",zIndex:29,boxShadow:"-6px 0 24px rgba(0,0,0,0.18)",borderRadius:"20px 0 0 20px"},
+      topBar: {display:"flex",alignItems:"center",justifyContent:"space-between",padding:"16px 18px 0"},
+      topBarLeft: {display:"flex",alignItems:"center",gap:8},
+      superTitle: sans({fontSize:12,color:C.inkLight}),
+      backChip: sans({display:"flex",alignItems:"center",gap:4,background:"none",border:`1px solid ${C.warmGray}`,borderRadius:20,padding:"4px 10px 4px 6px",fontSize:12,color:C.inkLight,cursor:"pointer",WebkitTapHighlightColor:"transparent"}),
+      searchToggle: {background:"none",border:"none",cursor:"pointer",width:38,height:38,display:"flex",alignItems:"center",justifyContent:"center",WebkitTapHighlightColor:"transparent"},
+      pageTitleBar: {padding:"6px 18px 16px",display:"flex",alignItems:"flex-end",justifyContent:"space-between"},
+      superLabel: sans({fontSize:11,color:C.inkLight,letterSpacing:"0.04em",marginBottom:2}),
+      pageH1: sans({fontSize:28,fontWeight:"800",color:C.ink,margin:0,lineHeight:1.15}),
+      searchBar: {display:"flex",alignItems:"center",gap:10,margin:"0 18px 14px",background:"#efefef",borderRadius:14,padding:"10px 14px",border:"none",boxShadow:NEU_DOWN},
+      searchInput: sans({flex:1,border:"none",background:"transparent",fontSize:16,color:C.ink,outline:"none"}),
+      searchClear: sans({background:"none",border:"none",color:C.inkLight,cursor:"pointer",fontSize:14,padding:"0 4px"}),
+      content: {flex:1,padding:"0 14px 100px"},
+      list: {display:"flex",flexDirection:"column",gap:10},
+      subRow: sans({background:"#efefef",borderRadius:16,padding:"13px 14px",display:"flex",alignItems:"center",gap:8,border:"none",boxShadow:NEU_UP,textAlign:"left",WebkitTapHighlightColor:"transparent",cursor:"default",boxSizing:"border-box",width:"100%"}),
+      subDot: {width:8,height:8,borderRadius:"50%",flexShrink:0},
+      subName: sans({flex:1,fontSize:16,color:C.ink,fontWeight:"500",cursor:"pointer"}),
+      subCount: sans({fontSize:12,color:C.inkLight,background:"rgba(0,0,0,0.06)",borderRadius:20,padding:"2px 9px",cursor:"pointer"}),
+      dotBtn: {background:"none",border:"none",cursor:"pointer",padding:"4px 6px",display:"flex",alignItems:"center",WebkitTapHighlightColor:"transparent"},
+      recipeRow: sans({background:"#efefef",borderRadius:16,padding:"12px",display:"flex",alignItems:"center",gap:8,border:"none",boxShadow:NEU_UP,textAlign:"left",WebkitTapHighlightColor:"transparent",cursor:"default",boxSizing:"border-box",width:"100%"}),
+      thumb: {width:58,height:58,borderRadius:10,objectFit:"cover",flexShrink:0},
+      thumbFallback: {width:58,height:58,borderRadius:10,flexShrink:0,background:"#e8e8e8",display:"flex",alignItems:"center",justifyContent:"center",fontSize:24},
+      recipeInfo: {flex:1,display:"flex",flexDirection:"column",gap:3,minWidth:0,cursor:"pointer"},
+      recipeTitle: sans({fontSize:15,fontWeight:"600",color:C.ink,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}),
+      recipeDesc: sans({fontSize:12,color:C.inkLight,fontStyle:"italic",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}),
+      recipeBadge: sans({fontSize:10,color:C.terra,border:`1px solid ${C.terra}`,borderRadius:4,padding:"1px 5px",alignSelf:"flex-start",marginTop:2}),
+      recipeBreadcrumb: sans({fontSize:11,color:C.inkLight}),
+      fab: {position:"fixed",bottom:24,right:18,zIndex:15,width:56,height:56,borderRadius:"50%",border:"none",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",boxShadow:"0 4px 20px rgba(0,0,0,0.25)",WebkitTapHighlightColor:"transparent",transition:"background 0.4s ease"},
+      panel: sans({position:"fixed",inset:0,zIndex:50,background:"#f8f8f8",transition:"transform 0.33s cubic-bezier(0.32,0,0.18,1)",display:"flex",flexDirection:"column"}),
+      panelHeader: {position:"sticky",top:0,zIndex:5,display:"flex",alignItems:"center",gap:2,padding:"0 6px",minHeight:54,borderBottom:`1px solid ${C.warmGray}`,background:"rgba(248,248,248,0.96)",backdropFilter:"blur(10px)",WebkitBackdropFilter:"blur(10px)",flexShrink:0},
+      panelTitle: sans({flex:1,fontSize:16,fontWeight:"700",color:C.ink,padding:"0 4px"}),
+      iconBtn: {background:"none",border:"none",cursor:"pointer",width:44,height:44,display:"flex",alignItems:"center",justifyContent:"center",borderRadius:10,WebkitTapHighlightColor:"transparent"},
+      menuOverlay: {position:"fixed",inset:0,zIndex:60},
+      dropMenu: {position:"absolute",top:56,right:10,zIndex:70,background:C.white,border:`1px solid ${C.warmGray}`,borderRadius:14,boxShadow:"0 4px 24px rgba(0,0,0,0.13)",minWidth:210,overflow:"hidden"},
+      dropItem: sans({width:"100%",background:"none",border:"none",padding:"14px 16px",fontSize:14,color:C.ink,cursor:"pointer",display:"flex",alignItems:"center",gap:10,textAlign:"left",WebkitTapHighlightColor:"transparent"}),
+      dropDivider: {height:1,background:C.warmGray},
+      heroWrap: {flexShrink:0,maxHeight:"38vw",minHeight:130,overflow:"hidden"},
+      heroImg: {width:"100%",height:"100%",objectFit:"cover",display:"block"},
+      panelBody: {flex:1,overflowY:"auto",padding:"18px 16px 48px"},
+      panelDesc: sans({fontSize:14,color:C.inkLight,fontStyle:"italic",margin:"0 0 14px"}),
+      openLinkBtn: sans({display:"inline-block",color:"#fff",padding:"12px 22px",borderRadius:12,textDecoration:"none",fontSize:15,fontWeight:"700",marginBottom:16}),
+      iframeBox: {borderRadius:12,overflow:"hidden",border:`1px solid ${C.warmGray}`},
+      iframe: {width:"100%",border:"none",display:"block",height:"calc(100dvh - 230px)",minHeight:280},
+      recipeText: serif({fontSize:15,color:C.ink,lineHeight:1.8,whiteSpace:"pre-wrap",margin:0,background:"#efefef",borderRadius:12,padding:16,border:`1px solid ${C.warmGray}`}),
+      overlay: {position:"fixed",inset:0,zIndex:100,background:"rgba(0,0,0,0.4)",display:"flex",alignItems:"flex-end"},
+      sheet: sans({background:C.white,borderRadius:"22px 22px 0 0",padding:"8px 18px 44px",width:"100%",boxShadow:"0 -6px 40px rgba(0,0,0,0.15)",maxHeight:"93dvh",overflowY:"auto",boxSizing:"border-box"}),
+      handle: {width:40,height:4,borderRadius:2,background:C.warmGray,margin:"6px auto 18px"},
+      sheetTitle: sans({fontSize:20,fontWeight:"700",color:C.ink,margin:"0 0 4px"}),
+      sheetSub: sans({fontSize:13,color:C.inkLight,margin:"0 0 18px"}),
+      choiceRow: {display:"flex",gap:12,marginBottom:16},
+      choiceCard: sans({flex:1,background:"#efefef",border:`1.5px solid ${C.warmGray}`,borderRadius:14,padding:"18px 10px",display:"flex",flexDirection:"column",alignItems:"center",gap:8,cursor:"pointer",WebkitTapHighlightColor:"transparent"}),
+      choiceLabel: sans({fontSize:13,color:C.ink,fontWeight:"500"}),
+      stepBack: sans({background:"none",border:"none",color:C.inkLight,fontSize:13,cursor:"pointer",padding:"2px 0 10px",display:"block"}),
+      label: sans({fontSize:10,color:C.inkLight,display:"block",marginBottom:5,fontWeight:"700",letterSpacing:"0.07em",textTransform:"uppercase"}),
+      input: sans({width:"100%",padding:"13px 14px",border:`1.5px solid ${C.warmGray}`,borderRadius:10,fontSize:16,background:"#efefef",color:C.ink,marginBottom:12,boxSizing:"border-box",outline:"none",WebkitAppearance:"none"}),
+      textarea: sans({width:"100%",padding:"13px 14px",border:`1.5px solid ${C.warmGray}`,borderRadius:10,fontSize:15,background:"#efefef",color:C.ink,marginBottom:12,boxSizing:"border-box",minHeight:150,resize:"vertical",lineHeight:1.65,outline:"none",WebkitAppearance:"none"}),
+      imgPickBtn: sans({width:"100%",padding:"15px 14px",border:`1.5px dashed ${C.warmGray}`,borderRadius:12,background:"#efefef",display:"flex",alignItems:"center",gap:12,cursor:"pointer",marginBottom:12,WebkitTapHighlightColor:"transparent",boxSizing:"border-box"}),
+      imgPreview: {width:"100%",borderRadius:12,display:"block",maxHeight:200,objectFit:"cover",marginBottom:8},
+      imgRemoveBtn: sans({background:"none",border:`1px solid ${C.warmGray}`,borderRadius:8,padding:"7px 14px",fontSize:13,color:C.inkLight,cursor:"pointer",marginBottom:12,display:"block"}),
+      ghostBtn: sans({width:"100%",padding:13,border:`1.5px solid ${C.warmGray}`,borderRadius:12,background:"none",fontSize:15,color:C.inkLight,cursor:"pointer"}),
+      saveBtn: sans({width:"100%",padding:15,border:"none",borderRadius:12,background:C.terra,color:"#fff",fontSize:16,fontWeight:"700",cursor:"pointer",WebkitTapHighlightColor:"transparent",transition:"opacity 0.15s"}),
+    };
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+  </script>
+</body>
+</html>

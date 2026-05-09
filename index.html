@@ -45,19 +45,20 @@
     const gProvider = new firebase.auth.GoogleAuthProvider();
 
     // ── Default data ────────────────────────────────────────
+    const CAT_ORDER = ["Middag", "Bakst", "Drikker"];
     const defaultData = {
       Middag: {
-        icon:"🍽️", color:"#6b4f3a",
+        icon:"🍽️", color:"#28374A",
         subOrder:["Kylling","Svin","Storfe","Fisk","Salater"],
         subcategories:{ Kylling:[], Svin:[], Storfe:[], Fisk:[], Salater:[] },
       },
       Bakst: {
-        icon:"🍞", color:"#8b6914",
+        icon:"🍞", color:"#754437",
         subOrder:["Søtbakst","Kaker","Rundstykker/Brød","Til middag"],
         subcategories:{ Søtbakst:[], Kaker:[], "Rundstykker/Brød":[], "Til middag":[] },
       },
       Drikker: {
-        icon:"🥂", color:"#3a5f4e",
+        icon:"🥂", color:"#6B6751",
         subOrder:["Smoothies","Cocktails","Varm"],
         subcategories:{ Smoothies:[], Cocktails:[], Varm:[] },
       },
@@ -367,7 +368,7 @@
       const [loginLoading, setLoginLoading] = useState(false);
       const [data,    setData]    = useState(defaultData);
       const [syncing, setSyncing] = useState(false);
-      const [activeCat, setActiveCat] = useState(Object.keys(defaultData)[0]);
+      const [activeCat, setActiveCat] = useState(CAT_ORDER[0]);
       const [activeSub, setActiveSub] = useState(null);
       const [activeRecipe, setActiveRecipe] = useState(null);
       const [slideIn, setSlideIn] = useState(false);
@@ -485,7 +486,7 @@
       const reorderSubs = (newOrder) => { const d={...data}; d[activeCat].subOrder=newOrder; updateData(d); };
 
       // Search
-      const allRecipes = () => { const out=[]; Object.entries(data).forEach(([cat,cv])=>Object.entries(cv.subcategories).forEach(([sub,list])=>list.forEach(r=>out.push({...r,_cat:cat,_sub:sub})))); return out; };
+      const allRecipes = () => { const out=[]; CAT_ORDER.filter(cat=>data[cat]).forEach(cat=>{const cv=data[cat];Object.entries(cv.subcategories).forEach(([sub,list])=>list.forEach(r=>out.push({...r,_cat:cat,_sub:sub})))}); return out; };
       const searchResults = searchQuery.trim() ? allRecipes().filter(r=>r.title.toLowerCase().includes(searchQuery.toLowerCase())||(r.desc&&r.desc.toLowerCase().includes(searchQuery.toLowerCase()))) : [];
 
       const catColor   = data[activeCat]?.color||"#555";
@@ -509,7 +510,7 @@
             </div>
             <nav ref={navRef} style={s.sideNav}>
               <NotchMarker topPx={notchTopPx} bg={C.bg}/>
-              {Object.entries(data).map(([cat]) => {
+              {CAT_ORDER.filter(cat => data[cat]).map((cat) => {
                 const isActive=cat===activeCat;
                 return (
                   <button key={cat} ref={el=>{itemRefs.current[cat]=el;}} style={s.sideItem} onClick={()=>switchCat(cat)}>
@@ -519,7 +520,7 @@
               })}
             </nav>
             <div style={s.sideBottom}>
-              <button style={s.homeBtn} onClick={()=>{switchCat(Object.keys(data)[0]);setActiveSub(null);}}>
+              <button style={s.homeBtn} onClick={()=>{switchCat(CAT_ORDER[0]);setActiveSub(null);}}>
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.5)" strokeWidth="1.8" strokeLinecap="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
               </button>
             </div>

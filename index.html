@@ -410,11 +410,17 @@
           if (snap.exists) {
             const d = snap.data().data;
             // Always apply correct colors and subOrder from defaultData
+            let needsUpdate = false;
             Object.keys(d).forEach(cat => {
-              if (!d[cat].subOrder) d[cat].subOrder = Object.keys(d[cat].subcategories);
-              if (defaultData[cat]) d[cat].color = defaultData[cat].color;
+              if (!d[cat].subOrder) { d[cat].subOrder = Object.keys(d[cat].subcategories); needsUpdate = true; }
+              if (defaultData[cat] && d[cat].color !== defaultData[cat].color) {
+                d[cat].color = defaultData[cat].color;
+                needsUpdate = true;
+              }
             });
             setData(d);
+            // Write corrected colors back to Firebase so they stick
+            if (needsUpdate) ref.set({ data: d });
           } else {
             ref.set({ data: defaultData });
           }

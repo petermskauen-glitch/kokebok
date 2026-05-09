@@ -409,7 +409,11 @@
         const unsub = ref.onSnapshot(snap => {
           if (snap.exists) {
             const d = snap.data().data;
-            Object.keys(d).forEach(cat => { if (!d[cat].subOrder) d[cat].subOrder = Object.keys(d[cat].subcategories); });
+            // Always apply correct colors and subOrder from defaultData
+            Object.keys(d).forEach(cat => {
+              if (!d[cat].subOrder) d[cat].subOrder = Object.keys(d[cat].subcategories);
+              if (defaultData[cat]) d[cat].color = defaultData[cat].color;
+            });
             setData(d);
           } else {
             ref.set({ data: defaultData });

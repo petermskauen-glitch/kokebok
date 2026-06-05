@@ -119,15 +119,20 @@
     }
 
     function useTouchSort(items, onReorder) {
-      const state = useRef({ startY:0, idx:null, cloneEl:null, overIdx:undefined });
+      const state = useRef({ offsetY:0, idx:null, cloneEl:null, insertAt:null, containerRef:null });
       const [activeIdx, setActiveIdx] = useState(null);
+      // insertAt is the slot (0..n) where the item will land — drives the live drop indicator.
+      const [insertAt, setInsertAt] = useState(null);
       const onTouchStart = (i, containerRef) => (e) => {
-        const touch=e.touches[0], el=e.currentTarget, rect=el.getBoundingClientRect();
+        const touch=e.touches[0];
+        // Clone the whole row (not just the grip) so the user sees what they're moving.
+        const el=e.currentTarget.closest("[data-sortidx]") || e.currentTarget;
+        const rect=el.getBoundingClientRect();
         const clone=el.cloneNode(true);
-        clone.style.cssText=`position:fixed;top:${rect.top}px;left:${rect.left}px;width:${rect.width}px;opacity:0.92;z-index:9999;pointer-events:none;transform:scale(1.03);transition:none;box-shadow:0 12px 32px rgba(0,0,0,0.22);border-radius:16px;`;
+        clone.style.cssText=`position:fixed;top:${rect.top}px;left:${rect.left}px;width:${rect.width}px;height:${rect.height}px;margin:0;opacity:0.95;z-index:9999;pointer-events:none;transform:scale(1.03);transition:none;box-shadow:0 12px 32px rgba(0,0,0,0.22);border-radius:16px;`;
         document.body.appendChild(clone);
-        state.current={ startY:touch.clientY, offsetY:touch.clientY-rect.top, idx:i, cloneEl:clone, containerRef, overIdx:i };
-        setActiveIdx(i);
+        state.current={ offsetY:touch.clientY-rect.top, idx:i, cloneEl:clone, containerRef, insertAt:i };
+        setActiveIdx(i); setInsertAt(i);
       };
       const onTouchMove = useCallback((e) => {
         const { cloneEl, offsetY, containerRef } = state.current;
@@ -137,18 +142,21 @@
         cloneEl.style.top=(touch.clientY-offsetY)+"px";
         if (!containerRef?.current) return;
         const children=Array.from(containerRef.current.children).filter(c=>c.dataset.sortidx!==undefined);
-        let newOver=state.current.idx;
-        for (let c of children) { const r=c.getBoundingClientRect(); if (touch.clientY > r.top+r.height/2) newOver=parseInt(c.dataset.sortidx); }
-        state.current.overIdx=newOver;
+        // Insertion slot = number of rows whose midpoint sits above the finger.
+        let slot=0;
+        for (let c of children) { const r=c.getBoundingClientRect(); if (touch.clientY > r.top+r.height/2) slot++; }
+        if (slot!==state.current.insertAt) { state.current.insertAt=slot; setInsertAt(slot); }
       }, []);
       const onTouchEnd = useCallback(() => {
-        const { cloneEl, idx, overIdx } = state.current;
+        const { cloneEl, idx, insertAt:slot } = state.current;
         if (cloneEl) document.body.removeChild(cloneEl);
-        if (idx!==null && overIdx!==undefined && overIdx!==idx) {
-          const arr=[...items]; const [item]=arr.splice(idx,1); arr.splice(overIdx,0,item); onReorder(arr);
+        if (idx!==null && slot!==null) {
+          // Removing idx shifts later slots left by one.
+          const to = slot>idx ? slot-1 : slot;
+          if (to!==idx) { const arr=[...items]; const [item]=arr.splice(idx,1); arr.splice(to,0,item); onReorder(arr); }
         }
-        state.current={ startY:0, idx:null, cloneEl:null, overIdx:undefined };
-        setActiveIdx(null);
+        state.current={ offsetY:0, idx:null, cloneEl:null, insertAt:null, containerRef:null };
+        setActiveIdx(null); setInsertAt(null);
       }, [items, onReorder]);
       useEffect(() => {
         if (activeIdx!==null) {
@@ -157,7 +165,12 @@
         }
         return () => { window.removeEventListener("touchmove",onTouchMove); window.removeEventListener("touchend",onTouchEnd); };
       }, [activeIdx, onTouchMove, onTouchEnd]);
-      return { activeIdx, onTouchStart };
+      return { activeIdx, insertAt, onTouchStart };
+    }
+
+    // Live drop indicator shown between rows while touch-sorting.
+    function InsertLine({ color }) {
+      return <div style={{height:3,borderRadius:2,background:color,margin:"-3px 4px",boxShadow:`0 0 8px ${color}`,flexShrink:0}}/>;
     }
 
     // ── Icons ───────────────────────────────────────────────
@@ -290,53 +303,61 @@
     function SubList({ subs, catColor, data, activeCat, onSwitch, onEdit, onDelete, onReorder }) {
       const containerRef = useRef();
       const { dragging:dDrag, over:dOver, onDragStart, onDragEnter, onDragOver, onDrop, onDragEnd } = useDragSort(subs, onReorder);
-      const { activeIdx:tActive, onTouchStart } = useTouchSort(subs, onReorder);
+      const { activeIdx:tActive, insertAt:tInsert, onTouchStart } = useTouchSort(subs, onReorder);
       return (
         <div ref={containerRef} style={s.list}>
           {subs.map((sub,i) => {
             const count=data[activeCat].subcategories[sub]?.length||0;
             const isOver=dOver===i&&dDrag!==i, isDragging=dDrag===i||tActive===i;
             return (
-              <div key={sub} data-sortidx={i} draggable
-                onDragStart={onDragStart(i)} onDragEnter={onDragEnter(i)} onDragOver={onDragOver} onDrop={onDrop} onDragEnd={onDragEnd}
-                style={{...s.subRow,opacity:isDragging?0.4:1,outline:isOver?`2px solid ${catColor}`:"none",transition:"opacity 0.15s,outline 0.1s"}}>
-                <div onTouchStart={onTouchStart(i,containerRef)} style={{padding:"4px 6px 4px 0",cursor:"grab"}}><DragHandle/></div>
-                <div style={{...s.subDot,background:catColor}}/>
-                <span style={s.subName} onClick={()=>onSwitch(sub)}>{sub}</span>
-                <span style={s.subCount} onClick={()=>onSwitch(sub)}>{count}</span>
-                <SubMenu onEdit={()=>onEdit(sub)} onDelete={()=>onDelete(sub)}/>
-                <span onClick={()=>onSwitch(sub)} style={{display:"flex",alignItems:"center"}}><ChevR/></span>
-              </div>
+              <React.Fragment key={sub}>
+                {tActive!==null && tInsert===i && <InsertLine color={catColor}/>}
+                <div data-sortidx={i} draggable
+                  onDragStart={onDragStart(i)} onDragEnter={onDragEnter(i)} onDragOver={onDragOver} onDrop={onDrop} onDragEnd={onDragEnd}
+                  style={{...s.subRow,opacity:isDragging?0.4:1,outline:isOver?`2px solid ${catColor}`:"none",transition:"opacity 0.15s,outline 0.1s"}}>
+                  <div onTouchStart={onTouchStart(i,containerRef)} style={s.dragGrip}><DragHandle/></div>
+                  <div style={{...s.subDot,background:catColor}}/>
+                  <span style={s.subName} onClick={()=>onSwitch(sub)}>{sub}</span>
+                  <span style={s.subCount} onClick={()=>onSwitch(sub)}>{count}</span>
+                  <SubMenu onEdit={()=>onEdit(sub)} onDelete={()=>onDelete(sub)}/>
+                  <span onClick={()=>onSwitch(sub)} style={{display:"flex",alignItems:"center"}}><ChevR/></span>
+                </div>
+              </React.Fragment>
             );
           })}
+          {tActive!==null && tInsert===subs.length && <InsertLine color={catColor}/>}
         </div>
       );
     }
     function RecipeList({ recipes, onOpen, onReorder }) {
       const containerRef = useRef();
       const { dragging:dDrag, over:dOver, onDragStart, onDragEnter, onDragOver, onDrop, onDragEnd } = useDragSort(recipes, onReorder);
-      const { activeIdx:tActive, onTouchStart } = useTouchSort(recipes, onReorder);
+      const { activeIdx:tActive, insertAt:tInsert, onTouchStart } = useTouchSort(recipes, onReorder);
       return (
         <div ref={containerRef} style={s.list}>
           {recipes.map((r,i) => {
             const isOver=dOver===i&&dDrag!==i, isDragging=dDrag===i||tActive===i;
             return (
-              <div key={r.id} data-sortidx={i} draggable
-                onDragStart={onDragStart(i)} onDragEnter={onDragEnter(i)} onDragOver={onDragOver} onDrop={onDrop} onDragEnd={onDragEnd}
-                style={{...s.recipeRow,opacity:isDragging?0.4:1,outline:isOver?`2px solid ${C.terra}`:"none",transition:"opacity 0.15s,outline 0.1s"}}>
-                <div onTouchStart={onTouchStart(i,containerRef)} style={{padding:"4px 8px 4px 0",cursor:"grab"}}><DragHandle/></div>
-                <div style={{display:"flex",alignItems:"center",gap:12,flex:1,minWidth:0}} onClick={()=>onOpen(r)}>
-                  {r.image ? <img src={r.image} alt="" style={s.thumb}/> : <div style={s.thumbFallback}>{r.type==="link"?"🔗":"📝"}</div>}
-                  <div style={s.recipeInfo}>
-                    <span style={s.recipeTitle}>{r.title}</span>
-                    {r.desc && <span style={s.recipeDesc}>{r.desc}</span>}
-                    <span style={s.recipeBadge}>{r.type==="link"?"Link":"Manuell"}</span>
+              <React.Fragment key={r.id}>
+                {tActive!==null && tInsert===i && <InsertLine color={C.terra}/>}
+                <div data-sortidx={i} draggable
+                  onDragStart={onDragStart(i)} onDragEnter={onDragEnter(i)} onDragOver={onDragOver} onDrop={onDrop} onDragEnd={onDragEnd}
+                  style={{...s.recipeRow,opacity:isDragging?0.4:1,outline:isOver?`2px solid ${C.terra}`:"none",transition:"opacity 0.15s,outline 0.1s"}}>
+                  <div onTouchStart={onTouchStart(i,containerRef)} style={s.dragGrip}><DragHandle/></div>
+                  <div style={{display:"flex",alignItems:"center",gap:12,flex:1,minWidth:0}} onClick={()=>onOpen(r)}>
+                    {r.image ? <img src={r.image} alt="" style={s.thumb}/> : <div style={s.thumbFallback}>{r.type==="link"?"🔗":"📝"}</div>}
+                    <div style={s.recipeInfo}>
+                      <span style={s.recipeTitle}>{r.title}</span>
+                      {r.desc && <span style={s.recipeDesc}>{r.desc}</span>}
+                      <span style={s.recipeBadge}>{r.type==="link"?"Link":"Manuell"}</span>
+                    </div>
                   </div>
+                  <span onClick={()=>onOpen(r)} style={{display:"flex",alignItems:"center"}}><ChevR/></span>
                 </div>
-                <span onClick={()=>onOpen(r)} style={{display:"flex",alignItems:"center"}}><ChevR/></span>
-              </div>
+              </React.Fragment>
             );
           })}
+          {tActive!==null && tInsert===recipes.length && <InsertLine color={C.terra}/>}
         </div>
       );
     }
@@ -452,7 +473,14 @@
           setNotchTopPx(r.top-navTop+r.height/2-NOTCH_H/2-CORNER_R);
         });
       };
-      useEffect(() => { measureNotch(activeCat); }, [activeCat]);
+      // Re-measure when the category changes AND when the sidebar first appears
+      // (after auth), since activeCat doesn't change at that point.
+      useEffect(() => { if (user && authReady) measureNotch(activeCat); }, [activeCat, user, authReady]);
+      useEffect(() => {
+        const onResize = () => measureNotch(activeCat);
+        window.addEventListener("resize", onResize);
+        return () => window.removeEventListener("resize", onResize);
+      }, [activeCat]);
 
       const switchCat = (cat) => {
         if (cat===activeCat) return;
@@ -704,12 +732,13 @@
       searchClear: sans({background:"none",border:"none",color:C.inkLight,cursor:"pointer",fontSize:14,padding:"0 4px"}),
       content: {flex:1,padding:"0 14px 100px"},
       list: {display:"flex",flexDirection:"column",gap:10},
-      subRow: sans({background:"#efefef",borderRadius:16,padding:"13px 14px",display:"flex",alignItems:"center",gap:8,border:"none",boxShadow:NEU_UP,textAlign:"left",WebkitTapHighlightColor:"transparent",cursor:"default",boxSizing:"border-box",width:"100%"}),
+      subRow: sans({background:"#efefef",borderRadius:16,padding:"13px 14px",display:"flex",alignItems:"center",gap:8,border:"none",boxShadow:NEU_UP,textAlign:"left",WebkitTapHighlightColor:"transparent",cursor:"default",boxSizing:"border-box",width:"100%",userSelect:"none",WebkitUserSelect:"none",WebkitTouchCallout:"none"}),
+      dragGrip: {padding:"6px 8px 6px 0",cursor:"grab",touchAction:"none",WebkitUserSelect:"none",userSelect:"none",WebkitTouchCallout:"none",alignSelf:"stretch",display:"flex",alignItems:"center"},
       subDot: {width:8,height:8,borderRadius:"50%",flexShrink:0},
       subName: sans({flex:1,fontSize:16,color:C.ink,fontWeight:"500",cursor:"pointer"}),
       subCount: sans({fontSize:12,color:C.inkLight,background:"rgba(0,0,0,0.06)",borderRadius:20,padding:"2px 9px",cursor:"pointer"}),
       dotBtn: {background:"none",border:"none",cursor:"pointer",padding:"4px 6px",display:"flex",alignItems:"center",WebkitTapHighlightColor:"transparent"},
-      recipeRow: sans({background:"#efefef",borderRadius:16,padding:"12px",display:"flex",alignItems:"center",gap:8,border:"none",boxShadow:NEU_UP,textAlign:"left",WebkitTapHighlightColor:"transparent",cursor:"default",boxSizing:"border-box",width:"100%"}),
+      recipeRow: sans({background:"#efefef",borderRadius:16,padding:"12px",display:"flex",alignItems:"center",gap:8,border:"none",boxShadow:NEU_UP,textAlign:"left",WebkitTapHighlightColor:"transparent",cursor:"default",boxSizing:"border-box",width:"100%",userSelect:"none",WebkitUserSelect:"none",WebkitTouchCallout:"none"}),
       thumb: {width:58,height:58,borderRadius:10,objectFit:"cover",flexShrink:0},
       thumbFallback: {width:58,height:58,borderRadius:10,flexShrink:0,background:"#e8e8e8",display:"flex",alignItems:"center",justifyContent:"center",fontSize:24},
       recipeInfo: {flex:1,display:"flex",flexDirection:"column",gap:3,minWidth:0,cursor:"pointer"},

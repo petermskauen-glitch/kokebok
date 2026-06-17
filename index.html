@@ -395,6 +395,7 @@
       const [loginLoading, setLoginLoading] = useState(false);
       const [data,    setData]    = useState(defaultData);
       const [syncing, setSyncing] = useState(false);
+      const [syncError, setSyncError] = useState(null);
       const [activeCat, setActiveCat] = useState(CAT_ORDER[0]);
       const [activeSub, setActiveSub] = useState(null);
       const [activeRecipe, setActiveRecipe] = useState(null);
@@ -456,13 +457,21 @@
       }, [user]);
 
       const persist = async (newData) => {
-        if (!user) return;
-        setSyncing(true);
-        try { await db.collection("kokeboker").doc(user.uid).set({ data: newData }); }
-        catch(e) { console.error(e); }
-        setSyncing(false);
+        if (!user) return false;
+        setSyncing(true); setSyncError(null);
+        try {
+          await db.collection("kokeboker").doc(user.uid).set({ data: newData });
+          setSyncing(false); return true;
+        } catch(e) {
+          console.error(e);
+          const tooBig = /longer than|exceeds the maximum|1048576|bytes/i.test(e?.message||"");
+          setSyncError(tooBig
+            ? "Kokeboka er full (Firestore tillater maks ~1 MB). Bilder lagres inni dokumentet — fjern et bilde eller to, så går lagring igjen."
+            : ("Kunne ikke lagre: " + (e?.message || "ukjent feil")));
+          setSyncing(false); return false;
+        }
       };
-      const updateData = (newData) => { setData(newData); persist(newData); };
+      const updateData = (newData) => { setData(newData); return persist(newData); };
 
       // Notch
       const measureNotch = (cat) => {
@@ -492,17 +501,18 @@
       const closeRecipe = () => { setSlideIn(false); setShowPanelMenu(false); setTimeout(() => setActiveRecipe(null), 340); };
 
       // Recipe CRUD
-      const saveAdd = () => {
+      const saveAdd = async () => {
         if (!addForm.title.trim()) return;
         const recipe = { id:Date.now(), title:addForm.title.trim(), type:addType, url:addType==="link"?addForm.url.trim():null, content:addType==="manual"?addForm.content.trim():null, desc:addForm.desc.trim(), image:addForm.image||null };
         const d={...data}; d[activeCat].subcategories[activeSub]=[...(d[activeCat].subcategories[activeSub]||[]),recipe];
-        updateData(d); setShowAdd(false); setAddType(null); setAddForm(EMPTY_FORM);
+        // Only close/clear if the write actually reached the server, so a failed save isn't lost.
+        if (await updateData(d)) { setShowAdd(false); setAddType(null); setAddForm(EMPTY_FORM); }
       };
-      const saveEdit = () => {
+      const saveEdit = async () => {
         if (!editForm.title.trim()) return;
         const updated={...editForm,title:editForm.title.trim(),desc:editForm.desc.trim()};
         const d={...data}; d[activeCat].subcategories[activeSub]=d[activeCat].subcategories[activeSub].map(r=>r.id===updated.id?updated:r);
-        updateData(d); setActiveRecipe(updated); setShowEdit(false);
+        if (await updateData(d)) { setActiveRecipe(updated); setShowEdit(false); }
       };
       const doDelRecipe = (id) => { const d={...data}; d[activeCat].subcategories[activeSub]=d[activeCat].subcategories[activeSub].filter(r=>r.id!==id); updateData(d); setConfirmDelRecipe(null); closeRecipe(); };
       const reorderRecipes = (newList) => { const d={...data}; d[activeCat].subcategories[activeSub]=newList; updateData(d); };
@@ -573,6 +583,13 @@
           {/* MAIN */}
           <div style={s.mainPanel}>
             {syncing && <div style={{position:"absolute",top:12,right:60,zIndex:10,...sans({fontSize:11,color:C.inkLight,opacity:0.7})}}>Lagrer…</div>}
+            {syncError && (
+              <div style={{margin:"12px 18px 0",padding:"12px 14px",borderRadius:12,background:"#fdecea",border:`1px solid ${C.red}`,display:"flex",alignItems:"flex-start",gap:10}}>
+                <span style={{fontSize:16,lineHeight:1.2}}>⚠️</span>
+                <span style={sans({flex:1,fontSize:13,color:C.red,lineHeight:1.4})}>{syncError}</span>
+                <button style={sans({background:"none",border:"none",color:C.red,cursor:"pointer",fontSize:14,padding:"0 2px"})} onClick={()=>setSyncError(null)}>✕</button>
+              </div>
+            )}
             <div style={s.topBar}>
               <div style={s.topBarLeft}>
                 {activeSub ? (

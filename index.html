@@ -70,6 +70,52 @@
       },
     };
 
+    // ── Image storage helpers ───────────────────────────────
+    // Images are stored in a per-recipe Firestore subcollection (kokeboker/{uid}/images/{recipeId})
+    // so they don't count against the ~1 MB limit of the single main document.
+    // In React state a recipe keeps `image` (base64); on the wire the main doc only
+    // carries `hasImage:true`, and the bytes live in their own image document.
+    const stripImages = (d) => {
+      const out = {};
+      Object.keys(d).forEach(cat => {
+        const c = d[cat];
+        const subcategories = {};
+        Object.keys(c.subcategories).forEach(sub => {
+          subcategories[sub] = c.subcategories[sub].map(r => {
+            const { image, hasImage, ...rest } = r;
+            // Keep the reference if the recipe has an image OR is known to have one
+            // on the server whose bytes just aren't loaded into memory yet.
+            return (image || hasImage) ? { ...rest, hasImage:true } : rest;
+          });
+        });
+        out[cat] = { ...c, subcategories };
+      });
+      return out;
+    };
+    const collectImages = (d) => {
+      const map = {};
+      Object.keys(d).forEach(cat => Object.values(d[cat].subcategories).forEach(list =>
+        list.forEach(r => { if (r.image) map[String(r.id)] = r.image; })));
+      return map;
+    };
+    const mergeImages = (d, imgMap) => {
+      const out = {};
+      Object.keys(d).forEach(cat => {
+        const c = d[cat];
+        const subcategories = {};
+        Object.keys(c.subcategories).forEach(sub => {
+          subcategories[sub] = c.subcategories[sub].map(r => {
+            if (!r.hasImage) return r;
+            // Keep hasImage in memory so a save can't accidentally drop the reference
+            // when the bytes failed to load. image is null until/unless fetched.
+            return { ...r, image: imgMap[String(r.id)] || null };
+          });
+        });
+        out[cat] = { ...c, subcategories };
+      });
+      return out;
+    };
+
     // ── Theme ───────────────────────────────────────────────
     const C = {
       bg:"#efefef", white:"#f8f8f8", warmGray:"#e8e0d6",
@@ -275,7 +321,7 @@
               <input style={s.input} placeholder="https://..." inputMode="url" value={form.url||""} onChange={sf("url")}/>
               <label style={s.label}>Beskrivelse (valgfritt)</label>
               <input style={s.input} placeholder="En setning om oppskriften" value={form.desc} onChange={sf("desc")}/>
-              <ImagePicker image={form.image} onPick={img=>setForm(f=>({...f,image:img}))} onRemove={()=>setForm(f=>({...f,image:null}))}/>
+              <ImagePicker image={form.image} onPick={img=>setForm(f=>({...f,image:img}))} onRemove={()=>setForm(f=>({...f,image:null,hasImage:false}))}/>
               <button style={{...s.saveBtn,opacity:form.title.trim()?1:0.45}} onClick={onSave}>{isEdit?"Lagre endringer":"Lagre oppskrift"}</button>
             </>
           )}
@@ -289,7 +335,7 @@
               <input style={s.input} placeholder="En kort beskrivelse" value={form.desc} onChange={sf("desc")}/>
               <label style={s.label}>Oppskrift</label>
               <textarea style={s.textarea} placeholder={"Ingredienser:\n– ...\n\nFremgangsmåte:\n1. ..."} value={form.content||""} onChange={sf("content")}/>
-              <ImagePicker image={form.image} onPick={img=>setForm(f=>({...f,image:img}))} onRemove={()=>setForm(f=>({...f,image:null}))}/>
+              <ImagePicker image={form.image} onPick={img=>setForm(f=>({...f,image:img}))} onRemove={()=>setForm(f=>({...f,image:null,hasImage:false}))}/>
               <button style={{...s.saveBtn,opacity:form.title.trim()?1:0.45}} onClick={onSave}>{isEdit?"Lagre endringer":"Lagre oppskrift"}</button>
             </>
           )}
@@ -441,6 +487,8 @@
       const [contentFade, setContentFade] = useState(false);
       const [notchTopPx,  setNotchTopPx]  = useState(0);
       const searchRef = useRef(); const navRef = useRef(); const itemRefs = useRef({});
+      const serverImages = useRef({});  // recipeId -> base64, mirror of the images subcollection
+      const migratedRef = useRef(false);
 
       // Auth
       useEffect(() => {
@@ -452,45 +500,94 @@
         try { await auth.signInWithPopup(gProvider); } catch(e) { console.error(e); }
         setLoginLoading(false);
       };
-      const handleLogout = async () => { await auth.signOut(); setData(defaultData); setActiveSub(null); };
+      const handleLogout = async () => { await auth.signOut(); serverImages.current={}; migratedRef.current=false; setData(defaultData); setActiveSub(null); };
 
       // Firestore
       useEffect(() => {
         if (!user) return;
+        serverImages.current = {}; migratedRef.current = false;
         const ref = db.collection("kokeboker").doc(user.uid);
-        const unsub = ref.onSnapshot(snap => {
-          if (snap.exists) {
-            const d = snap.data().data;
-            // Always apply correct colors and subOrder from defaultData
-            let needsUpdate = false;
-            Object.keys(d).forEach(cat => {
-              if (!d[cat].subOrder) { d[cat].subOrder = Object.keys(d[cat].subcategories); needsUpdate = true; }
-              if (defaultData[cat] && d[cat].color !== defaultData[cat].color) {
-                d[cat].color = defaultData[cat].color;
-                needsUpdate = true;
-              }
-            });
-            setData(d);
-            // Write corrected colors back to Firebase so they stick
-            if (needsUpdate) ref.set({ data: d });
-          } else {
-            ref.set({ data: defaultData });
+        const imgDoc = (id) => ref.collection("images").doc(String(id));
+        let cancelled = false;
+
+        const hydrate = async (d) => {
+         try {
+          // Structural fixes (legacy docs may miss subOrder, or carry old colors)
+          let needsTextWrite = false;
+          Object.keys(d).forEach(cat => {
+            if (!d[cat].subOrder) { d[cat].subOrder = Object.keys(d[cat].subcategories); needsTextWrite = true; }
+            if (defaultData[cat] && d[cat].color !== defaultData[cat].color) { d[cat].color = defaultData[cat].color; needsTextWrite = true; }
+          });
+
+          // ── Legacy migration: move inline base64 images into the subcollection ──
+          const inline = collectImages(d);
+          const hasInline = Object.keys(inline).some(id => (inline[id]||"").startsWith("data:"));
+          if (hasInline && !migratedRef.current) {
+            migratedRef.current = true;
+            const ids = Object.keys(inline);
+            for (let i=0; i<ids.length; i+=400) {
+              const batch = db.batch();
+              ids.slice(i,i+400).forEach(id => batch.set(imgDoc(id), { image: inline[id] }));
+              await batch.commit();
+            }
+            Object.assign(serverImages.current, inline);
+            await ref.set({ data: stripImages(d) });   // rewrite main doc without image bytes
+            if (!cancelled) setData(mergeImages(stripImages(d), serverImages.current));
+            return;
           }
+          if (hasInline) { if (!cancelled) setData(d); return; }  // migration in flight; show inline meanwhile
+
+          // ── Normal path: main doc is text-only with hasImage flags ──
+          const referenced = new Set();
+          const missing = [];
+          Object.keys(d).forEach(cat => Object.values(d[cat].subcategories).forEach(list => list.forEach(r => {
+            if (r.hasImage) { referenced.add(String(r.id)); if (!serverImages.current[String(r.id)]) missing.push(String(r.id)); }
+          })));
+          if (missing.length) {
+            await Promise.all(missing.map(async id => {
+              try { const s = await imgDoc(id).get(); if (s.exists) serverImages.current[id] = s.data().image; }
+              catch(e) { console.error(e); }
+            }));
+          }
+          // Drop cached images that are no longer referenced
+          Object.keys(serverImages.current).forEach(id => { if (!referenced.has(id)) delete serverImages.current[id]; });
+
+          const merged = mergeImages(d, serverImages.current);
+          if (needsTextWrite) await ref.set({ data: stripImages(merged) });
+          if (!cancelled) setData(merged);
+         } catch(e) {
+           console.error(e);
+           if (!cancelled) setSyncError("Kunne ikke laste eller migrere bilder: " + (e?.message||"ukjent feil"));
+         }
+        };
+
+        const unsub = ref.onSnapshot(snap => {
+          if (snap.exists) { const d = snap.data().data; if (d) hydrate(d); }
+          else { ref.set({ data: defaultData }); }
         });
-        return unsub;
+        return () => { cancelled = true; unsub(); };
       }, [user]);
 
       const persist = async (newData) => {
         if (!user) return false;
         setSyncing(true); setSyncError(null);
         try {
-          await db.collection("kokeboker").doc(user.uid).set({ data: newData });
+          const ref = db.collection("kokeboker").doc(user.uid);
+          const imgDoc = (id) => ref.collection("images").doc(String(id));
+          const next = collectImages(newData), prev = serverImages.current;
+          const batch = db.batch();
+          // Only write images that are new or changed; delete those that were removed.
+          Object.keys(next).forEach(id => { if (next[id] !== prev[id]) batch.set(imgDoc(id), { image: next[id] }); });
+          Object.keys(prev).forEach(id => { if (!(id in next)) batch.delete(imgDoc(id)); });
+          batch.set(ref, { data: stripImages(newData) });
+          await batch.commit();
+          serverImages.current = next;
           setSyncing(false); return true;
         } catch(e) {
           console.error(e);
           const tooBig = /longer than|exceeds the maximum|1048576|bytes/i.test(e?.message||"");
           setSyncError(tooBig
-            ? "Kokeboka er full (Firestore tillater maks ~1 MB). Bilder lagres inni dokumentet — fjern et bilde eller to, så går lagring igjen."
+            ? "Bildet er for stort (over 1 MB selv etter komprimering). Prøv et mindre bilde."
             : ("Kunne ikke lagre: " + (e?.message || "ukjent feil")));
           setSyncing(false); return false;
         }
